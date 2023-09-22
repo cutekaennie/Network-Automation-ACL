@@ -1,0 +1,27 @@
+---
+mainro: 
+  platform: cisco_ios
+mainsw: 
+  platform: cisco_ios
+
+
+row1: 
+  platform: cisco_ios
+routerrow1: 
+  platform: cisco_ios
+switchrow1: 
+  platform: cisco_ios
+
+row2: 
+  platform: cisco_ios
+routerrow2:
+  platform: cisco_ios
+switchrow2: 
+  platform: cisco_ios
+
+row3: 
+  platform: cisco_ios
+routerrow3:
+  platform: cisco_ios
+switchrow3: 
+  platform: cisco_ios
