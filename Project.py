@@ -1,6 +1,7 @@
 from netmiko import ConnectHandler
 from nornir import InitNornir
 from nornir_utils.plugins.functions import print_result
+
 from nornir.core.filter import F
 from getpass import getpass
 import logging 
@@ -59,30 +60,76 @@ def filter_group(nr, group_name):
         print("No devices found in group \033[33m{}\033[0m.".format(group_name))
         return None, None
     
-def test_acl(acl_name,src_ip,filtered_nr):
-    
-    src =  src_ip
-    print("src",src)
-    global dest  
-    dest = "192.168.35.141" 
+def test_acl(acl_name,src_ip,filtered_nr):  
     with open("./json_acl/acl_command.json", 'r') as file:
         existing_data = json.load(file) 
     data = existing_data[acl_name]
-    for key, value in data.items():
+
+    for idx, (key, value) in enumerate(data.items()):
+        src =  ""
+        dest = "" 
+        port = ""
+        
         if key != "acl_name":
-            ip = re.findall("\d+\.\d+\.\d+\.\d+", value)
+            pattern = r'\d+\.\d+\.\d+\.\d+'
+            # port_pattern = r'\d+'
+            allowed_ports = r'(80|443|53|23)'
+
+            ip = re.findall(pattern, value)
+            portMatch = re.findall(allowed_ports, value)
+
+            print(f"case: {idx+1}")
             print(f"Key: {key}, Value: {ip}")
+        
+            l = len(ip)
             
-            if len(ip) > 0 :
+            if l == 4:
                 src = ip[0]
-                dest = ip[len(ip)-1]
-            test_acl_command = f"enable\n"    
-            test_acl_command += f"ping {src}\n" 
-            print("test_acl_command",test_acl_command)    
-                    
+                dest = ip[2]
+            elif l > 1 and l < 4:
+                if re.search(f'(\s) (ip|tcp) {pattern} {pattern} any', value):
+                    src = ip[0]
+                else:   
+                    src = ip[0]
+                    if l > 1:
+                        dest = ip[1]
+            else:
+                if re.search(f'host {pattern} any', value):
+                    # src = ip[0]
+                    src = ip[0]
+                elif re.search(f'any host {pattern}', value):
+                    dest = ip[0]
+                else:
+                    ip_from_user = input("Input for test: ")
+                    src = ip_from_user 
+                    # dest = ""
+
+            if re.search(f'eq {allowed_ports}', value):
+                port = portMatch[0]
+                # print("port:",portMatch)
+
+            test_acl_command = "enable\n"
+            
+            if key == "icmp" or key == "ip":
+                test_acl_command += f"ping {src or dest}\n" 
+            elif key == "tcp":
+                if port == "23":
+                    test_acl_command +=  f"telnet {src or dest} {port}\n" 
+                elif port == "80":
+                    test_acl_command +=  f"ping Web.ac.th\n" 
+                elif port == "443":
+                    test_acl_command +=  f"ping https://www.sut.ac.th\n"
+            else:
+                test_acl_command +=  f"ping a.ac.th\n" 
+
+            print(f"Source IP: {src}")
+            print(f"Destination IP: {dest}")
+            print(f"Port: {port}")
+            print(f"{test_acl_command}\n")
+
             result = filtered_nr.run(task=send_command, command=test_acl_command)
             print_result(result)
-            filtered_nr.close_connections()    
+            filtered_nr.close_connections()  
         
 def show_acl(filtered_nr):
     show_acl ="enable\n"
@@ -90,13 +137,14 @@ def show_acl(filtered_nr):
     
     result = filtered_nr.run(task=send_command, command=show_acl)
     print_result(result)
+    
     filtered_nr.close_connections()
     
 def delete_on_interface (filtered_nr):
     delete_on_interface = "enable\nconf t\n"
     interface = input("Enter interface : ")
     delete_on_interface += f"int {interface}\n"
-    delete_on_interface += f"do show ip access-group\n"
+    # delete_on_interface += f"do show ip access-group\n"
     acl_name = input("Enter ACL name : ")
      
     flow = input("Select direction of pecket flow (in / out): ")
@@ -105,23 +153,95 @@ def delete_on_interface (filtered_nr):
     result = filtered_nr.run(task=send_command, command=delete_on_interface)
     print_result(result)
     filtered_nr.close_connections()
-def delete_some_line (filtered_nr): #no บันทัด ในsimใช่งานไม่ได้จริงเหมือนที่เรียนมา **ไปลองในห้องแลป**
+    
+def delete_some_line (filtered_nr):
     delete_some_line = "enable\nconf t\n"
     acl_name = input("Enter ACL name : ")
-    delete_some_line += f"do show ip access-lists {acl_name}\n"
+    delete_some_line += f"ip access-list extended {acl_name}\n"
     line_number = input("Enter line number to delete : ")
     delete_some_line += f"no {line_number}\n"
+    print(line_number)
+    
+    # e.g., 10 -> 1 100 -> 10
+    # {
+    #   idx:0  "acl_name": "test1",
+    #   idx: 1  "deny_icmp_source": "deny icmp host 192.168.35.141 any",
+    #   idx: 2 "permit_ip_not_specific": "permit ip any any\n"
+    # }
+    split_idx = int(line_number[:-1])
+    print(split_idx)
+    delete_acl_line_number_from_json(acl_name, index=split_idx, filename="./json_acl/acl_command.json", filename_for_get_key="./json_acl/acl_command_for_get_key.json")
     
     result = filtered_nr.run(task=send_command, command=delete_some_line)
     print_result(result)
     filtered_nr.close_connections()
+      
     
+def delete_acl_line_number_from_json(acl_name, index,filename, filename_for_get_key):
+    try:
+        # Load the existing JSON file (if it exists)
+        with open(filename_for_get_key, 'r') as file:
+            existing_data_get_key = json.load(file)
+
+        # Load file for get key of acl cmd
+        with open(filename, 'r') as file:
+            existing_data = json.load(file)
+        
+    except FileNotFoundError:
+        # If the file doesn't exist, there's nothing to delete
+        print(f"ACL '{acl_name}' not found in the JSON file.")
+        return
+
+    # Check if the ACL name exists in the JSON data
+    if acl_name in existing_data:
+        # Delete the ACL entry from the dictionary
+
+        k = list(existing_data_get_key[acl_name])[index]
+
+        print(f"key of {acl_name}: {k}")
+        del existing_data[acl_name][k]
+        
+        # Save the updated data back to the JSON file
+        with open(filename, 'w') as file:
+            json.dump(existing_data, file, indent=4)
+        print(f"ACL '{acl_name}' deleted from the JSON file.")
+    else:
+        print(f"ACL '{acl_name}' not found in the JSON file.")
+
+def delete_acl_from_json(acl_name, filename):
+    try:
+        # Load the existing JSON file (if it exists)
+        with open(filename, 'r') as file:
+            existing_data = json.load(file)
+    except FileNotFoundError:
+        # If the file doesn't exist, there's nothing to delete
+        print(f"ACL '{acl_name}' not found in the JSON file.")
+        return
+
+    # Check if the ACL name exists in the JSON data
+    if acl_name in existing_data:
+        # Delete the ACL entry from the dictionary
+
+        del existing_data[acl_name]
+
+        # k = list(existing_data[acl_name])[index]
+        # print(f"key of {acl_name}: {k}")
+        # del existing_data[acl_name][k]
+        
+        # Save the updated data back to the JSON file
+        with open(filename, 'w') as file:
+            json.dump(existing_data, file, indent=4)
+        print(f"ACL '{acl_name}' deleted from the JSON file.")
+    else:
+        print(f"ACL '{acl_name}' not found in the JSON file.")
+             
 def delete_acl(filtered_nr):
     delete_acl = "enable\nconf t\n"
     acl_name = input("Enter ACL name : ")
     delete_acl += f"no ip access-list extended {acl_name}"
     
     result = filtered_nr.run(task=send_command, command=delete_acl)
+    delete_acl_from_json(acl_name, filename="./json_acl/acl_command.json")
     print_result(result)
     filtered_nr.close_connections()
     
@@ -143,6 +263,7 @@ def modify(filtered_nr):
         
     elif user_action == "4":
         exit
+
 def apply_acl (filtered_nr):
     print("======================================\n")
     print("Select direction of pecket flow ")
@@ -158,318 +279,12 @@ def apply_acl (filtered_nr):
     elif user_action == "3":
         exit
     print("======================================\n")
-    
-def basic_acl (filtered_nr):
-    print("======================================\n")
-    print("top 10 access control list for network\n")
-    print("1 Block a Specific IP Address")
-    print("2 Allow SSH from a Specific IP Address")
-    print("3 Deny All Telnet Traffic")
-    print("4 Allow Web Traffic HTTP from a Subnet")
-    print("5 Allow Web Traffic HTTPS from a Subnet")
-    print("6 Block All Traffic from a Specific Subnet")
-    print("7 Allow ICMP for Ping")
-    print("8 Deny All Traffic to a Sensitive Server")
-    print("9 Allow DNS Queries")
-    print("10 Allow DHCP Responses")
-    print("11 Exit\n")
-    print("======================================")
-    user_action = input("Choose action : ")
-    
-    if user_action == "1":
-        Block_a_specific_IP_address(filtered_nr) 
-        apply_acl (filtered_nr)
-        
-    elif user_action == "2":
-        Allow_SSH_from_a_specific_IP_Address(filtered_nr)
-        apply_acl (filtered_nr)
-        
-    elif user_action == "3":
-        Deny_all_telnet_traffic(filtered_nr)
-        apply_acl (filtered_nr)
-        
-    elif user_action == "4":
-        Allow_web_traffic_HTTP_from_a_Subnet(filtered_nr)     
-        apply_acl (filtered_nr)
-        
-    elif user_action == "5":
-        Allow_Web_Traffic_HTTPS_from_a_Subnet (filtered_nr)
-        apply_acl (filtered_nr)  
-         
-    elif user_action == "6":
-        Block_All_Traffic_from_a_Specific_Subnet (filtered_nr) 
-        apply_acl (filtered_nr)
-            
-    elif user_action == "7":
-        Allow_ICMP_for_Ping (filtered_nr)
-        apply_acl (filtered_nr)
-            
-    elif user_action == "8":
-        Deny_All_Traffic_to_a_Sensitive_Server (filtered_nr)
-        apply_acl (filtered_nr)
-        
-    elif user_action == "9":
-        Allow_DNS_Queries (filtered_nr)
-        apply_acl (filtered_nr)
-        
-    elif user_action == "10":
-        Allow_DHCP_Responses(filtered_nr)
-        apply_acl (filtered_nr)
-    
-    elif user_action == "11":
-        print("Exiting Basic ACL ...")
-        return
-        
-    else:
-        print("Invalid selection. Please try again.")
-    
-
-   
-def Block_a_specific_IP_address(filtered_nr):
-    
-    acl_name = input("Enter ACL name : ")
-    Block_a_specific_IP_address = f"enable\nconf t\n"
-    Block_a_specific_IP_address += f"ip access-list extended {acl_name}\n"
-    
-    ip = input("Enter IP adress ")
-    Block_a_specific_IP_address += f"deny ip host {ip} any\n"
-    acl_config = {
-    "acl_name": acl_name,
-    "Block_a_specific_IP_address" : f"deny ip host {ip} any\n"
-    }
-    write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    result = filtered_nr.run(task=send_command, command=Block_a_specific_IP_address)
-    print_result(result)
-    filtered_nr.close_connections()
-    
-def Allow_SSH_from_a_specific_IP_Address(filtered_nr): 
-    
-    acl_name = input("Enter ACL name : ")
-    Allow_SSH_from_a_specific_IP_Address = f"enable\nconf t\n"
-    Allow_SSH_from_a_specific_IP_Address += f"ip access-list extended {acl_name}\n"
-    
-    ip = input("Enter IP adress ")
-    Allow_SSH_from_a_specific_IP_Address += f"permit tcp host {ip} any eq 22\n"  
-    acl_config = {
-    "acl_name": acl_name,
-    "Allow_SSH_from_a_specific_IP_Address" : f"permit tcp host {ip} any eq 22\n"
-    }
-    write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-    
-    result = filtered_nr.run(task=send_command, command=Allow_SSH_from_a_specific_IP_Address)
-    print_result(result)
-    filtered_nr.close_connections()
-
-def Deny_all_telnet_traffic(filtered_nr):     
-    
-    acl_name = input("Enter ACL name : ")
-    Deny_all_telnet_traffic = f"enable\nconf t\n"
-    Deny_all_telnet_traffic += f"ip access-list extended {acl_name}\n"
-    
-    Deny_all_telnet_traffic += f"deny tcp any any eq 23\n"
-    acl_config = {
-    "acl_name": acl_name,
-    "Deny_all_telnet_traffic" : f"deny tcp any any eq 23\n"
-    }
-    write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-    
-    result = filtered_nr.run(task=send_command, command=Deny_all_telnet_traffic)
-    print_result(result)
-    filtered_nr.close_connections()
-
-def Allow_web_traffic_HTTP_from_a_Subnet(filtered_nr):      
-    
-    acl_name = input("Enter ACL name : ")
-    Allow_web_traffic_HTTP_from_a_Subnet = f"enable\nconf t\n"
-    Allow_web_traffic_HTTP_from_a_Subnet += f"ip access-list extended {acl_name}\n"
-    
-    ip = input("Enter  IP adress: ")
-    wildcard_masks =input("Enter wildcard masks: ")
-    Allow_web_traffic_HTTP_from_a_Subnet += f"permit tcp {ip} {wildcard_masks} any eq 80\n"
-    acl_config = {
-    "acl_name": acl_name,
-    "Allow_web_traffic_HTTP_from_a_Subnet" : f"permit tcp {ip} {wildcard_masks} any eq 80\n"
-    }
-    write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    result = filtered_nr.run(task=send_command, command=Allow_web_traffic_HTTP_from_a_Subnet)
-    print_result(result)
-    filtered_nr.close_connections()
-  
-def Allow_Web_Traffic_HTTPS_from_a_Subnet (filtered_nr): 
-    
-    acl_name = input("Enter ACL name : ")
-    Allow_Web_Traffic_HTTPS_from_a_Subnet = f"enable\nconf t\n"
-    Allow_Web_Traffic_HTTPS_from_a_Subnet += f"ip access-list extended {acl_name}\n"
-    
-    ip = input("Enter  IP adress: ")
-    wildcard_masks =input("Enter wildcard masks: ")
-    Allow_Web_Traffic_HTTPS_from_a_Subnet += f"permit tcp {ip} {wildcard_masks} any eq 443\n"
-    acl_config = {
-    "acl_name": acl_name,
-    "Allow_Web_Traffic_HTTPS_from_a_Subnet" : f"permit tcp {ip} {wildcard_masks} any eq 443\n"
-    }
-    write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-     
-    result = filtered_nr.run(task=send_command, command=Allow_Web_Traffic_HTTPS_from_a_Subnet)
-    print_result(result)
-    filtered_nr.close_connections()
-    
-def Block_All_Traffic_from_a_Specific_Subnet (filtered_nr): 
-    
-    acl_name = input("Enter ACL name : ")
-    Block_All_Traffic_from_a_Specific_Subnet = f"enable\nconf t\n"
-    Block_All_Traffic_from_a_Specific_Subnet += f"ip access-list extended {acl_name}\n"
-    
-    ip = input("Enter  IP adress: ")
-    wildcard_masks =input("Enter wildcard masks: ")
-    Block_All_Traffic_from_a_Specific_Subnet += f"permit ip {ip} {wildcard_masks} any\n"
-    acl_config = {
-    "acl_name": acl_name,
-    "Block_All_Traffic_from_a_Specific_Subnet" : f"permit ip {ip} {wildcard_masks} any\n"
-    }
-    write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-    
-    result = filtered_nr.run(task=send_command, command=Block_All_Traffic_from_a_Specific_Subnet)
-    print_result(result)
-    filtered_nr.close_connections()
-
-def Allow_ICMP_for_Ping (filtered_nr): 
-     
-    acl_name = input("Enter ACL name : ")
-    Allow_ICMP_for_Ping = f"enable\nconf t\n"
-    Allow_ICMP_for_Ping += f"ip access-list extended {acl_name}\n"
-    
-    Allow_ICMP_for_Ping += f"permit icmp any any echo\n"
-    acl_config = {
-    "acl_name": acl_name,
-    "Allow_ICMP_for_Ping" : f"permit icmp any any echo\n"
-    }
-    write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-    
-    result = filtered_nr.run(task=send_command, command=Allow_ICMP_for_Ping)
-    print_result(result)
-    filtered_nr.close_connections()
-
-def Deny_All_Traffic_to_a_Sensitive_Server (filtered_nr):  
-        
-    acl_name = input("Enter ACL name : ")
-    Deny_All_Traffic_to_a_Sensitive_Server = f"enable\nconf t\n"
-    Deny_All_Traffic_to_a_Sensitive_Server += f"ip access-list extended {acl_name}\n"
-    
-    ip = input("Enter sensitive IP adress: ")
-    Deny_All_Traffic_to_a_Sensitive_Server += f"deny ip any host {ip}\n"
-    acl_config = {
-    "acl_name": acl_name,
-    "Deny_All_Traffic_to_a_Sensitive_Server" : f"deny ip any host {ip}\n"
-    }
-    write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    result = filtered_nr.run(task=send_command, command=Deny_All_Traffic_to_a_Sensitive_Server)
-    print_result(result)
-    filtered_nr.close_connections()
-
-def Allow_DNS_Queries (filtered_nr):
-    
-    acl_name = input("Enter ACL name : ")
-    Allow_DNS_Queries = f"enable\nconf t\n"
-    Allow_DNS_Queries += f"ip access-list extended {acl_name}\n"
-    
-    Allow_DNS_Queries += f"permit udp any any eq 53\n"
-    acl_config = {
-    "acl_name": acl_name,
-    "Allow_DNS_Queries" : f"permit udp any any eq 53\n"
-    }
-    write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-     
-    result = filtered_nr.run(task=send_command, command=Allow_DNS_Queries)
-    print_result(result)
-    filtered_nr.close_connections()
-
-def Allow_DHCP_Responses(filtered_nr):
-    
-    acl_name = input("Enter ACL name : ")
-    Allow_DHCP_Responses = f"enable\nconf t\n"
-    Allow_DHCP_Responses += f"ip access-list extended {acl_name}\n"
-    
-    Allow_DHCP_Responses += f"permit udp any eq 67 any eq 68\n"  # 67 DHCP Server ,68 DHCP Client
-    acl_config = {
-    "acl_name": acl_name,
-    "Allow_DHCP_Responses" : f"permit udp any eq 67 any eq 68\n"
-    }
-    write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-     
-    result = filtered_nr.run(task=send_command, command=Allow_DHCP_Responses)
-    print_result(result)
-    filtered_nr.close_connections()
-
-    
-def advdance_acl(filtered_nr):
-    print("======================================\n")
-    print("advdance access control list for network")
-    print("1 Deny ICMP")
-    print("2 Deny domain name")
-    print("3 Deny TCP")
-    print("4 Deny UDP")
-    print("5 Deny IP")
-    print("6 Permit ICMP")
-    print("7 Permit domain name")
-    print("8 Permit TCP")
-    print("9 Permit UDP")
-    print("10 Permit IP")
-    print("11 Exit\n")
-    print("======================================")
-    user_action = input("Choose action : ")
-        
-    if user_action == "1":
-        deny_icmp(filtered_nr)
-        apply_acl (filtered_nr)
-            
-    elif user_action == "2":
-        deny_domainname(filtered_nr) 
-        apply_acl (filtered_nr)
-        
-    elif user_action == "3":
-        deny_tcp(filtered_nr) 
-        apply_acl (filtered_nr)
-        
-    elif user_action == "4":
-        deny_udp(filtered_nr) 
-        apply_acl (filtered_nr)
-            
-    elif user_action == "5":
-        deny_ip(filtered_nr) 
-        apply_acl (filtered_nr)
-        
-    elif user_action == "6":
-        permit_icmp(filtered_nr) 
-        apply_acl (filtered_nr)
-            
-    elif user_action == "7":
-        permit_domainname(filtered_nr) 
-        apply_acl (filtered_nr)
-        
-    elif user_action == "8":
-        permit_tcp(filtered_nr) 
-        apply_acl (filtered_nr)
-            
-    elif user_action == "9":
-        permit_udp(filtered_nr) 
-        apply_acl (filtered_nr)
-        
-    elif user_action == "10":
-        permit_ip(filtered_nr) 
-        apply_acl (filtered_nr)
-        
-    elif user_action == "11":
-        print("Exiting program...")
-        exit
-        
-    else:
-        print("Invalid selection. Please try again.")
         
 def write_acl_to_json(acl_config, filename):
+    split_filename = filename.split(".json")
+
+    file_get_key = f"{split_filename[0]}_for_get_key.json"
+    # print(split_filename)
     # with open(filename, 'w') as json_file:
         
     #     json.dump(acl_config, json_file, indent=4) 
@@ -477,14 +292,19 @@ def write_acl_to_json(acl_config, filename):
     try:
         with open(filename, 'r') as file:
             existing_data = json.load(file)
+
+        with open(file_get_key, 'r') as file_key:
+            existing_data_get_key = json.load(file_key)
     except FileNotFoundError:
         # If the file doesn't exist, create an empty dictionary
         existing_data = {}
+        existing_data_get_key = {}
 
     # Extract the "acl_name" from the input data
     acl_name = acl_config.get("acl_name")
-    if acl_name in existing_data:
+    if acl_name in existing_data and acl_name in existing_data_get_key :
         existing_data[acl_name].update(acl_config)
+        existing_data_get_key[acl_name].update(acl_config)
         
     else :
         # Create a new entry with the "acl_name" as the key
@@ -492,739 +312,16 @@ def write_acl_to_json(acl_config, filename):
 
         # Update the existing dictionary with the new data
         existing_data.update(new_data)
+        existing_data_get_key.update(new_data)
 
         # Save the updated data back to the JSON file
     with open(filename, 'w') as file:
-        json.dump(existing_data, file, indent=4)     
-              
-def deny_icmp(filtered_nr):
-    acl_name = input("Enter ACL name : ")
-    print("Would you like to spacific \n 1.Source\n 2.Destination\n 3.Source and Destination\n 4.Range\n 5.Not specific\n 6.Exit\n ")
-    user_action = input("Choose action : ")
-    
-    deny_icmp = f"conf t\n"
-    deny_icmp += f"ip access-list extended {acl_name}\n"
-    
-    if user_action == "1":
-        deny_icmp_source = input("Enter source IP adress ")
-        deny_icmp += f"deny icmp host {deny_icmp_source} any\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_icmp_source" : f"deny icmp host {deny_icmp_source} any"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "2":
-        deny_icmp_dest = input("Enter destination IP adress ")
-        deny_icmp  += f"deny icmp any host {deny_icmp_dest}\n" 
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_icmp_dest" : f"deny icmp any host {deny_icmp_dest}"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json") 
-        
-    elif user_action == "3":
-        deny_icmp_source = input("Enter source IP adress ")
-        deny_icmp_dest  = input("Enter Destination IP adress ")
-        deny_icmp += f"deny icmp host {deny_icmp_source} host {deny_icmp_dest}\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_icmp_source_dest" : f"deny icmp host {deny_icmp_source} host {deny_icmp_dest}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json") 
-        
-        
-    elif user_action == "4":
-        source_ip = input("Enter source IP adress: ")
-        source_wildcard_masks =input("Enter source wildcard masks: ")
-        destination_ip = input("Enter destination ip: ")
-        destination_wildcard_masks =input("Enter destination wildcard masks: ")
-        deny_icmp += f"deny icmp {source_ip} {source_wildcard_masks} {destination_ip} {destination_wildcard_masks}\n"      
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_icmp_range" : f"deny icmp {source_ip} {source_wildcard_masks} {destination_ip} {destination_wildcard_masks}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")         
-        
-    elif user_action == "5":     
-        deny_icmp += f"deny icmp any any\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_icmp_not_specific" : f"deny icmp any any\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")       
-        
-    elif user_action == "6":
-        print("Exiting function...")
-        exit
-        
-    else:
-        print("Invalid selection. Please try again.")
-             
-    result = filtered_nr.run(task=send_command, command=deny_icmp)
-    print_result(result)
-    filtered_nr.close_connections()
-    
+        json.dump(existing_data, file, indent=4)   
 
-
-def permit_icmp(filtered_nr):
-    acl_name = input("Enter ACL name : ")
-    print("Would you like to spacific \n 1.Source\n 2.Destination\n 3.Source and Destination\n 4.Range\n 5.Not specific\n 6.Exit\n ")
-    user_action = input("Choose action : ")
+    # duplicate file for get key of acl cmd
+    with open(file_get_key, 'w') as file:
+        json.dump(existing_data_get_key, file, indent=4)
     
-    permit_icmp = f"enable\nconf t\n"
-    permit_icmp += f"ip access-list extended {acl_name}\n"
-    
-    if user_action == "1":
-        permit_icmp_source = input("Enter source IP adress ")
-        permit_icmp += f"permit icmp host {permit_icmp_source} any\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_icmp_source" : f"permit icmp host {permit_icmp_source} any\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "2":
-        permit_icmp_dest = input("Enter destination IP adress ")
-        permit_icmp  += f"permit icmp any host {permit_icmp_dest}\n"  
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_icmp_dest" : f"permit icmp any host {permit_icmp_dest}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "3":
-        permit_icmp_source = input("Enter source IP adress ")
-        permit_icmp_dest  = input("Enter Destination IP adress ")
-        permit_icmp += f"permit icmp host {permit_icmp_source} host {permit_icmp_dest}\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_icmp_source_dest" : f"permit icmp host {permit_icmp_source} host {permit_icmp_dest}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "4":
-        source_ip = input("Enter source IP adress: ")
-        source_wildcard_masks =input("Enter source wildcard masks: ")
-        destination_ip = input("Enter destination ip: ")
-        destination_wildcard_masks =input("Enter destination wildcard masks: ")
-        permit_icmp += f"permit icmp {source_ip} {source_wildcard_masks} {destination_ip} {destination_wildcard_masks}\n"              
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_icmp_range" : f"permit icmp {source_ip} {source_wildcard_masks} {destination_ip} {destination_wildcard_masks}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-     
-        
-    elif user_action == "5":     
-        permit_icmp += f"permit icmp any any\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_icmp_not_specific" : f"permit icmp any any\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")     
-        
-    elif user_action == "6":
-        print("Exiting function...")
-        exit
-        
-    else:
-        print("Invalid selection. Please try again.")
-             
-    result = filtered_nr.run(task=send_command, command=permit_icmp)
-    print_result(result)
-    filtered_nr.close_connections()
-        
-def deny_domainname(filtered_nr):
-    
-    acl_name = input("Enter ACL name : ")
-    print("Would you like to spacific \n 1.Source\n 2.Destination\n 3.Source and Destination\n 4.Range\n 5.Not specific\n 6.Exit\n ") 
-    user_action = input("Choose action : ")
-    
-    deny_domainname = f"enable\nconf t\n"
-    deny_domainname += f"ip access-list extended {acl_name}\n"
-    
-    if user_action == "1":
-        deny_domainname_source = input("Enter source IP adress ")
-        deny_domainname += f"deny udp host {deny_domainname_source} eq 53 any\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_domainname_source" : f"deny udp host {deny_domainname_source} eq 53 any\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "2":
-        deny_domainname_dest = input("Enter destination IP adress ")
-        deny_domainname  += f"deny udp any eq 53 host {deny_domainname_dest}\n"  
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_domainname_dest" : f"deny udp any eq 53 host {deny_domainname_dest}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-        
-    elif user_action == "3":
-        deny_domainname_source = input("Enter source IP adress ")
-        deny_domainname_dest  = input("Enter Destination IP adress ")
-        deny_domainname += f"deny udp host {deny_domainname_source} eq 53 host {deny_domainname_dest}\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "ddeny_domainname_source_dest" : f"deny udp host {deny_domainname_source} eq 53 host {deny_domainname_dest}\n" 
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "4":
-        source_domainname = input("Enter source IP adress: ")
-        source_wildcard_masks =input("Enter source wildcard masks: ")
-        destination_domainname = input("Enter destination ip: ")
-        destination_wildcard_masks =input("Enter destination wildcard masks: ")
-        deny_domainname  += f"deny udp {source_domainname} {source_wildcard_masks} {destination_domainname} {destination_wildcard_masks}\n" 
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_domainname_range" : f"deny udp {source_domainname} {source_wildcard_masks} {destination_domainname} {destination_wildcard_masks}\n"
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-                  
-    elif user_action == "5": 
-        deny_domainname += f"deny udp any any eq 53\n"  
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_domainname_not_specific" : f"deny udp any any eq 53\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")       
-        
-        
-    elif user_action == "6":
-        print("Exiting function...")
-        exit
-        
-    else:
-        print("Invalid selection. Please try again.")
-    
-    result = filtered_nr.run(task=send_command, command=deny_domainname)
-    print_result(result)
-    filtered_nr.close_connections()
-    
-def permit_domainname(filtered_nr):
-    
-    acl_name = input("Enter ACL name : ")
-    print("Would you like to spacific \n 1.Source\n 2.Destination\n 3.Source and Destination\n 4.Range\n 5.Not specific\n 6.Exit\n ") 
-    user_action = input("Choose action : ")
-    
-    permit_domainname = f"enable\nconf t\n"
-    permit_domainname += f"ip access-list extended {acl_name}\n"
-    
-    if user_action == "1":
-        permit_domainname_source = input("Enter source IP adress ")
-        permit_domainname += f"permit udp host {permit_domainname_source} eq 53 any\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_domainname_source" : f"permit udp host {permit_domainname_source} eq 53 any\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")    
-        
-    elif user_action == "2":
-        permit_domainname_dest = input("Enter destination IP adress ")
-        permit_domainname  += f"permit udp any eq 53 host {permit_domainname_dest}\n"  
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_domainname_dest" : f"permit udp any eq 53 host {permit_domainname_dest}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")   
-          
-    elif user_action == "3":
-        permit_domainname_source = input("Enter source IP adress ")
-        permit_domainname_dest  = input("Enter Destination IP adress ")
-        permit_domainname += f"permit udp host {permit_domainname_source} eq 53 host {permit_domainname_dest}\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_domainname_source_dest" : f"permit udp host {permit_domainname_source} eq 53 host {permit_domainname_dest}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")       
-         
-    elif user_action == "4":
-        source_domainname = input("Enter source IP adress: ")
-        source_wildcard_masks =input("Enter source wildcard masks: ")
-        destination_domainname = input("Enter destination ip: ")
-        destination_wildcard_masks =input("Enter destination wildcard masks: ")
-        permit_domainname  += f"permit udp {source_domainname} {source_wildcard_masks} {destination_domainname} {destination_wildcard_masks}\n" 
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_domainname_range" : f"permit udp {source_domainname} {source_wildcard_masks} {destination_domainname} {destination_wildcard_masks}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")        
-         
-            
-    elif user_action == "5": 
-        permit_domainname += f"permit udp any any eq 53\n"  
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_domainname_not_specific" : f"permit udp any any eq 53\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")         
-         
-    elif user_action == "6":
-        print("Exiting function...")
-        exit
-        
-    else:
-        print("Invalid selection. Please try again.")
-    
-    result = filtered_nr.run(task=send_command, command=permit_domainname)
-    print_result(result)
-    filtered_nr.close_connections()
- 
-
-def deny_tcp(filtered_nr):
-    
-    acl_name = input("Enter ACL name : ")
-    print("Would you like to spacific \n 1.Source\n 2.Destination\n 3.Source and Destination\n 4.Range\n 5.Not specific\n 6.Exit \n")
-    user_action = input("Choose action : ")
-    
-    deny_tcp = f"enable\nconf t\n"
-    deny_tcp += f"ip access-list extended {acl_name}\n"
-    
-    if user_action == "1":
-        deny_sourcetcp = input("Enter source IP adress ")
-        deny_tcp += f"deny tcp host {deny_sourcetcp}\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_tcp_source" : f"deny tcp host {deny_sourcetcp}\n"
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "2":
-        deny_destinationtcp = input("Enter destination IP adress ")
-        deny_tcp  += f"deny tcp any host {deny_destinationtcp}\n"  
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_tcp_dest" : f"deny tcp any host {deny_destinationtcp}\n"
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-        
-    elif user_action == "3":
-        deny_sourcetcp = input("Enter source IP adress ")
-        deny_destinationtcp  = input("Enter Destination IP adress ")
-        deny_tcp += f"deny tcp host {deny_sourcetcp} host {deny_destinationtcp}\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_tcp_source_dest" : f"deny tcp host {deny_sourcetcp} host {deny_destinationtcp}\n"     
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "4":
-        source_tcp = input("Enter source IP adress: ")
-        source_wildcard_masks =input("Enter source wildcard masks: ")
-        destination_tcp = input("Enter destination ip: ")
-        destination_wildcard_masks =input("Enter destination wildcard masks: ")
-        deny_tcp  += f"deny tcp {source_tcp} {source_wildcard_masks} {destination_tcp} {destination_wildcard_masks}\n" 
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_tcp_range" : f"deny tcp {source_tcp} {source_wildcard_masks} {destination_tcp} {destination_wildcard_masks}\n"     
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json") 
-        
-    elif user_action == "5": 
-        deny_tcp += f"deny tcp any any eq 80\n"  
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_tcp_not_specific" : f"deny tcp any any eq 80\n"     
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-        
-    elif user_action == "6":
-        print("Exiting function...")
-        exit
-        
-    else:
-        print("Invalid selection. Please try again.")
-        
-    result = filtered_nr.run(task=send_command, command=deny_tcp)
-    print_result(result)
-    filtered_nr.close_connections()
-    
-def permit_tcp(filtered_nr):
-    
-    acl_name = input("Enter ACL name : ")
-    print("Would you like to spacific \n 1.Source\n 2.Destination\n 3.Source and Destination\n 4.Range\n 5.Not specific\n 6.Exit \n")
-    user_action = input("Choose action : ")
-    
-    permit_tcp = f"enable\nconf t\n"
-    permit_tcp += f"ip access-list extended {acl_name}\n"
-    
-    if user_action == "1":
-        permit_sourcetcp = input("Enter source IP adress ")
-        permit_tcp += f"permit tcp host {permit_sourcetcp}\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_tcp_source" : f"permit tcp host {permit_sourcetcp}\n"     
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json") 
-        
-        
-    elif user_action == "2":
-        permit_destinationtcp = input("Enter destination IP adress ")
-        permit_tcp  += f"permit tcp any host {permit_destinationtcp}\n"  
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_tcp_dest" : f"permit tcp any host {permit_destinationtcp}\n"     
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "3":
-        permit_sourcetcp = input("Enter source IP adress ")
-        permit_destinationtcp  = input("Enter Destination IP adress ")
-        permit_tcp += f"permit tcp host {permit_sourcetcp} host {permit_destinationtcp}\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_tcp_source_dest" : f"permit tcp host {permit_sourcetcp} host {permit_destinationtcp}\n"     
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "4":
-        source_tcp = input("Enter source IP adress: ")
-        source_wildcard_masks =input("Enter source wildcard masks: ")
-        destination_tcp = input("Enter destination ip: ")
-        destination_wildcard_masks =input("Enter destination wildcard masks: ")
-        permit_ip  += f"permit tcp {source_tcp} {source_wildcard_masks} {destination_tcp} {destination_wildcard_masks}\n" 
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_tcp_range" : f"permit tcp {source_tcp} {source_wildcard_masks} {destination_tcp} {destination_wildcard_masks}\n"     
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "5": 
-        permit_tcp += f"permit tcp any any eq 80\n"  
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_tcp_not_specific" : f"permit tcp any any eq 80\n"     
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "6":
-        print("Exiting function...")
-        exit
-        
-    else:
-        print("Invalid selection. Please try again.")
-        
-    result = filtered_nr.run(task=send_command, command=permit_tcp)
-    print_result(result)
-    filtered_nr.close_connections()
-    
-    
-def deny_udp(filtered_nr):
-    
-    acl_name = input("Enter ACL name : ")
-    print("Would you like to spacific \n 1.Source\n 2.Destination\n 3.Source and Destination\n 4.Range\n 5.Not specific \n 6.Exit \n")
-    user_action = input("Choose action : ")
-
-    deny_udp = f"enable\nconf t\n"
-    deny_udp += f"ip access-list extended {acl_name}\n"
-    
-    if user_action == "1":
-        deny_sourceudp = input("Enter source IP adress ")
-        deny_udp += f"deny udp host {deny_sourceudp}\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_udp_source" : f"deny udp host {deny_sourceudp}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "2":
-        deny_destinationudp = input("Enter destination IP adress ")
-        deny_udp  += f"deny udp any host {deny_destinationudp}\n"  
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_udp_dest" : f"deny udp any host {deny_destinationudp}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "3":
-        deny_sourceudp = input("Enter source IP adress ")
-        deny_destinationudp  = input("Enter Destination IP adress ")
-        deny_udp += f"deny udp host {deny_sourceudp} host {deny_destinationudp}\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_udp_source_dest" : f"deny udp host {deny_sourceudp} host {deny_destinationudp}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "4":
-        source_udp = input("Enter source IP adress: ")
-        source_wildcard_masks =input("Enter source wildcard masks: ")
-        destination_udp = input("Enter destination ip: ")
-        destination_wildcard_masks =input("Enter destination wildcard masks: ")
-        deny_udp  += f"deny ip {source_udp} {source_wildcard_masks} {destination_udp} {destination_wildcard_masks}\n" 
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_udp_range" : f"deny ip {source_udp} {source_wildcard_masks} {destination_udp} {destination_wildcard_masks}\n"
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "5":
-        deny_udp += f"deny udp any any eq 53\n" 
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_udp_not_specific" : f"deny udp any any eq 53\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")    
-        
-    elif user_action == "6":
-        print("Exiting function...")
-        exit
-        
-    else:
-        print("Invalid selection. Please try again.")
-  
-    result = filtered_nr.run(task=send_command, command=deny_udp)
-    print_result(result)
-    filtered_nr.close_connections()
-    
-def permit_udp(filtered_nr):
-    
-    acl_name = input("Enter ACL name : ")
-    print("Would you like to spacific \n 1.Source\n 2.Destination\n 3.Source and Destination\n 4.Range\n 5.Not specific \n 6.Exit \n")
-    user_action = input("Choose action : ")
-
-    permit_udp = f"enable\nconf t\n"
-    permit_udp += f"ip access-list extended {acl_name}\n"
-    
-    if user_action == "1":
-        permit_sourceudp = input("Enter source IP adress ")
-        permit_udp += f"permit udp host {permit_sourceudp}\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_udp_source" : f"permit udp host {permit_sourceudp}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "2":
-        permit_destinationudp = input("Enter destination IP adress ")
-        permit_udp  += f"permit udp any host {permit_destinationudp}\n"  
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_udp_dest" : f"permit udp any host {permit_destinationudp}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "3":
-        permit_sourceudp = input("Enter source IP adress ")
-        permit_destinationudp  = input("Enter Destination IP adress ")
-        permit_udp += f"permit udp host {permit_sourceudp} host {permit_destinationudp}\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_udp_source_dest" : f"permit udp host {permit_sourceudp} host {permit_destinationudp}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "4":
-        source_udp = input("Enter source IP adress: ")
-        source_wildcard_masks =input("Enter source wildcard masks: ")
-        destination_udp = input("Enter destination ip: ")
-        destination_wildcard_masks =input("Enter destination wildcard masks: ")
-        permit_udp  += f"permit ip {source_udp} {source_wildcard_masks} {destination_udp} {destination_wildcard_masks}\n" 
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_udp_range" : f"permit ip {source_udp} {source_wildcard_masks} {destination_udp} {destination_wildcard_masks}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "5":
-        permit_udp += f"permit udp any any eq 53\n" 
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_udp_not_specific" : f"permit udp any any eq 53\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "6":
-        print("Exiting function...")
-        exit
-        
-    else:
-        print("Invalid selection. Please try again.")
-  
-    result = filtered_nr.run(task=send_command, command=permit_udp)
-    print_result(result)
-    filtered_nr.close_connections()
-
-
-def deny_ip(filtered_nr):
-    
-    acl_name = input("Enter ACL name : ")    
-    print("Would you like to spacific \n 1.Source\n 2.Destination\n 3.Source and Destination\n 4.Range\n 5.Not specific \n 6.Exit \n")
-    user_action = input("Choose action : ")
-    
-    deny_ip = f"enable\nconf t\n"
-    deny_ip += f"ip access-list extended {acl_name}\n" 
-       
-    if user_action == "1":
-        deny_sourceip = input("Enter source IP adress ")
-        deny_ip += f"deny ip host {deny_sourceip}\n"  
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_ip_source" : f"deny ip host {deny_sourceip}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-            
-    elif user_action == "2":
-        deny_destinationip = input("Enter destination IP adress ")
-        deny_ip  += f"deny ip any host {deny_destinationip}\n"     
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_ip_dest" : f"deny ip any host {deny_destinationip}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-          
-    elif user_action == "3":
-        deny_sourceip = input("Enter source IP adress ")
-        deny_destinationip  = input("Enter Destination IP adress ")
-        deny_ip += f"deny ip host {deny_sourceip} host {deny_destinationip}\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_ip_source_dest" : f"deny ip host {deny_sourceip} host {deny_destinationip}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-         
-    elif user_action == "4":
-        source_ip = input("Enter source IP adress: ")
-        source_wildcard_masks =input("Enter source wildcard masks: ")
-        destination_ip = input("Enter destination ip: ")
-        destination_wildcard_masks =input("Enter destination wildcard masks: ")
-        deny_ip  += f"deny ip {source_ip} {source_wildcard_masks} {destination_ip} {destination_wildcard_masks}\n"  
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_ip_range" : f"deny ip {source_ip} {source_wildcard_masks} {destination_ip} {destination_wildcard_masks}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-         
-    elif user_action == "5":
-        deny_ip += f"deny ip any any\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "deny_ip_not_specific" : f"deny ip any any\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-         
-    elif user_action == "6":
-        print("Exiting function...")
-        exit
-        
-    else:
-        print("Invalid selection. Please try again.")
-
-    result = filtered_nr.run(task=send_command, command=deny_ip)
-    print_result(result)
-    filtered_nr.close_connections()         
-    
-def permit_ip(filtered_nr):
-    
-    acl_name = input("Enter ACL name : ")    
-    print("Would you like to spacific \n 1.Source\n 2.Destination\n 3.Source and Destination\n 4.Range\n 5.Not specific \n 6.Exit \n")
-    user_action = input("Choose action : ")
-    permit_ip = f"enable\nconf t\n"
-    permit_ip += f"ip access-list extended {acl_name}\n" 
-       
-    if user_action == "1":
-        permit_sourceip = input("Enter source IP adress ")
-        permit_ip += f"permit ip host {permit_sourceip}\n"  
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_ip_source" : f"permit ip host {permit_sourceip}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-            
-    elif user_action == "2":
-        permit_destinationip = input("Enter destination IP adress ")
-        permit_ip  += f"permit ip any host {permit_destinationip}\n"     
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_ip_dest" : f"permit ip any host {permit_destinationip}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-         
-    elif user_action == "3":
-        permit_sourceip = input("Enter source IP adress ")
-        permit_destinationip  = input("Enter Destination IP adress ")
-        permit_ip += f"permit ip host {permit_sourceip} host {permit_destinationip}\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_ip_dest" : f"permit ip host {permit_sourceip} host {permit_destinationip}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-         
-    elif user_action == "4":
-        source_ip = input("Enter source IP adress: ")
-        source_wildcard_masks =input("Enter source wildcard masks: ")
-        destination_ip = input("Enter destination ip: ")
-        destination_wildcard_masks =input("Enter destination wildcard masks: ")
-        permit_ip  += f"permit ip {source_ip} {source_wildcard_masks} {destination_ip} {destination_wildcard_masks}\n"  
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_ip_range" : f"permit ip {source_ip} {source_wildcard_masks} {destination_ip} {destination_wildcard_masks}\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-        
-    elif user_action == "5":
-        deny_ip += f"deny ip any any\n"
-        acl_config = {
-        "acl_name": acl_name,
-        "permit_ip_not_specific" : f"deny ip any any\n"
-        
-        }
-        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
-         
-    elif user_action == "6":
-        print("Exiting function...")
-        exit
-        
-    else:
-        print("Invalid selection. Please try again.")
-
-    result = filtered_nr.run(task=send_command, command=permit_ip)
-    print_result(result)
-    filtered_nr.close_connections()             
-
 def inbound (filtered_nr):
     
     interface_inbound = input("Enter interface inbound: ")
@@ -1252,15 +349,545 @@ def outbound (filtered_nr):
     result = filtered_nr.run(task=send_command, command=outbound)
     print_result(result)
     filtered_nr.close_connections()
+ 
+def Create_ACL (filtered_nr):
+    print("********************") 
+    print("Enter Protocol\n")
+    print("1 ICMP")
+    print("2 UDP ")
+    print("3 TCP ")
+    print("4 IP") 
+    print("5 DNS") 
+    print("6 Exit\n")
+    print("********************")  
+       
+    user_action = input("Choose action : ")
+    if user_action == "1":
+        protocol_icmp(filtered_nr)
+        apply_acl (filtered_nr)
+            
+    elif user_action == "2":
+        protocol_udp(filtered_nr) 
+        apply_acl (filtered_nr)
+        
+    elif user_action == "3":
+        protocol_tcp(filtered_nr) 
+        apply_acl (filtered_nr)
+            
+    elif user_action == "4":
+        protocol_ip(filtered_nr)
+        apply_acl (filtered_nr)
+        
+    elif user_action == "5":
+        protocol_dns(filtered_nr)
+        apply_acl (filtered_nr)
+        
+    elif user_action == "6":
+        print("Exiting program...")
+        exit
+        
+    
+def protocol_icmp (filtered_nr):
+    print("Select action (default is 'permit'): ")  
+    print("1 Permit")
+    print("2 Deny\n")
+    
+    tmp = ""
+    while not tmp:
+        action = input("Choose action: ")
+        if action == "1":
+            tmp += "permit"
+        elif action == "2":
+            tmp += "deny"
+        else:
+            print("Invalid selection. Please try again.")
+    
+    print("Would you like to spacific \n 1.Source\n 2.Destination\n 3.Source and Destination\n 4.Range\n 5.Not specific\n 6.Exit\n ")
+    user_action = input("Choose action : ")
+    
+    icmp = f"enable\nconf t\n"
+    acl_name = input("Enter ACL name : ")
+    icmp += f"ip access-list extended {acl_name}\n"
+    
+    if user_action == "1":
+        icmp_source = input("Enter source IP adress ")
+        icmp += f"{tmp} icmp host {icmp_source} any\n"
+        acl_config = {
+        "acl_name": acl_name,
+        "icmp" : f"{tmp} icmp host {icmp_source} any\n"
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+        
+    elif user_action == "2":
+        icmp_dest = input("Enter destination IP adress ")
+        icmp  += f"{tmp} icmp any host {icmp_dest}\n"  
+        acl_config = {
+        "acl_name": acl_name,
+        "icmp" : f"{tmp} icmp any host {icmp_dest}\n"
+        
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+        
+    elif user_action == "3":
+        icmp_source = input("Enter source IP adress ")
+        icmp_dest  = input("Enter Destination IP adress ")
+        icmp += f"{tmp} icmp host {icmp_source} host {icmp_dest}\n"
+        acl_config = {
+        "acl_name": acl_name,
+        "icmp" : f"{tmp} icmp host {icmp_source} host {icmp_dest}\n"
+        
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+        
+    elif user_action == "4":
+        source_ip = input("Enter source IP adress: ")
+        source_wildcard_masks =input("Enter source wildcard masks: ")
+        destination_ip = input("Enter destination ip: ")
+        destination_wildcard_masks =input("Enter destination wildcard masks: ")
+        icmp += f"{tmp} icmp {source_ip} {source_wildcard_masks} {destination_ip} {destination_wildcard_masks}\n"              
+        acl_config = {
+        "acl_name": acl_name,
+        "icmp" : f"{tmp} icmp {source_ip} {source_wildcard_masks} {destination_ip} {destination_wildcard_masks}\n"
+        
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+     
+        
+    elif user_action == "5":     
+        icmp += f"{tmp} icmp any any\n"
+        acl_config = {
+        "acl_name": acl_name,
+        "icmp" : f"{tmp} icmp any any\n"
+        
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")     
+        
+    elif user_action == "6":
+        print("Exiting function...")
+        exit
+        
+    else:
+        print("Invalid selection. Please try again.")
+             
+    result = filtered_nr.run(task=send_command, command=icmp)
+    print_result(result)
+    filtered_nr.close_connections()
+
+def protocol_udp (filtered_nr):
+    print("Select action (default is 'permit'): ")  
+    print("1 Permit")
+    print("2 Deny\n") 
+    
+    tmp = ""
+    while not tmp:
+        action = input("Choose action: ")
+        if action == "1":
+            tmp += "permit"
+        elif action == "2":
+            tmp += "deny"
+        else:
+            print("Invalid selection. Please try again.")
+    
+    print("Would you like to spacific \n 1.Source\n 2.Destination\n 3.Source and Destination\n 4.Range\n 5.Not specific\n 6.Exit\n ")
+    user_action = input("Choose action : ")
+    
+    udp = f"enable\nconf t\n"
+    acl_name = input("Enter ACL name : ")
+    udp += f"ip access-list extended {acl_name}\n"
+    
+    if user_action == "1":
+        permit_sourceudp = input("Enter source IP adress ")
+        udp += f"{tmp} udp host {permit_sourceudp} any eq 53\n"
+        acl_config = {
+        "acl_name": acl_name,
+        "udp" : f"{tmp} udp host {permit_sourceudp} any eq 53\n"
+        
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+        
+    elif user_action == "2":
+        permit_destinationudp = input("Enter destination IP adress ")
+        udp  += f"{tmp} udp any host {permit_destinationudp} eq 53\n"  
+        acl_config = {
+        "acl_name": acl_name,
+        "udp" : f"{tmp} udp any host {permit_destinationudp} eq 53\n"
+        
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+        
+    elif user_action == "3":
+        permit_sourceudp = input("Enter source IP adress ")
+        permit_destinationudp  = input("Enter Destination IP adress ")
+        udp += f"{tmp} udp host {permit_sourceudp} host {permit_destinationudp} eq 53\n"
+        acl_config = {
+        "acl_name": acl_name,
+        "udp" : f"{tmp} udp host {permit_sourceudp} host {permit_destinationudp} eq 53\n"
+        
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+        
+    elif user_action == "4":
+        source_udp = input("Enter source IP adress: ")
+        source_wildcard_masks =input("Enter source wildcard masks: ")
+        destination_udp = input("Enter destination ip: ")
+        destination_wildcard_masks =input("Enter destination wildcard masks: ")
+        udp  += f"{tmp} ip {source_udp} {source_wildcard_masks} {destination_udp} {destination_wildcard_masks} eq 53\n" 
+        acl_config = {
+        "acl_name": acl_name,
+        "udp" : f"{tmp} ip {source_udp} {source_wildcard_masks} {destination_udp} {destination_wildcard_masks} eq 53\n"
+        
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+        
+    elif user_action == "5":
+        permit_udp += f"{tmp} udp any any eq 53\n" 
+        acl_config = {
+        "acl_name": acl_name,
+        "udp" : f"{tmp} udp any any eq 53\n"
+        
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+        
+    elif user_action == "6":
+        print("Exiting function...")
+        exit
+        
+    else:
+        print("Invalid selection. Please try again.")
+  
+    result = filtered_nr.run(task=send_command, command=udp)
+    print_result(result)
+    filtered_nr.close_connections()
+
+def protocol_tcp (filtered_nr):
+    print("Select action (default is 'permit'): ")  
+    print("1 Permit")
+    print("2 Deny\n")
+    
+    tmp = ""
+    while not tmp:
+        action = input("Choose action: ")
+        if action == "1":
+            tmp += "permit"
+        elif action == "2":
+            tmp += "deny"
+        else:
+            print("Invalid selection. Please try again.")
+            
+    print("Select Port : ")  
+    print("1 23 = telnet")
+    print("2 80 = HTTP")
+    print("3 443 = HTTPS\n")
+    
+    tmpport = ""
+    while not tmpport:
+        action = input("Choose action: ")
+        if action == "1":
+            tmpport += "23"
+        elif action == "2":
+            tmpport += "80"
+        elif action == "3":
+            tmpport += "443"    
+        else:
+            print("Invalid selection. Please try again.")
+    
+    print("Would you like to spacific \n 1.Source\n 2.Destination\n 3.Source and Destination\n 4.Range\n 5.Not specific\n 6.Exit\n ")
+    user_action = input("Choose action : ")
+    
+    tcp = f"enable\nconf t\n"
+    acl_name = input("Enter ACL name : ")
+    tcp += f"ip access-list extended {acl_name}\n"
+    
+    if user_action == "1":
+        deny_sourcetcp = input("Enter source IP adress ")
+        tcp += f"{tmp} tcp host {deny_sourcetcp} any eq {tmpport}\n"
+        acl_config = {
+        "acl_name": acl_name,
+        "tcp" : f"{tmp} tcp host {deny_sourcetcp} any eq {tmpport}\n"
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+        
+    elif user_action == "2":
+        deny_destinationtcp = input("Enter destination IP adress ")
+        tcp  += f"{tmp} tcp any host {deny_destinationtcp} eq {tmpport}\n"  
+        acl_config = {
+        "acl_name": acl_name,
+        "tcp" : f"{tmp} tcp any host {deny_destinationtcp} eq {tmpport}\n"
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+        
+        
+    elif user_action == "3":
+        deny_sourcetcp = input("Enter source IP adress ")
+        deny_destinationtcp  = input("Enter Destination IP adress ")
+        tcp += f"{tmp} tcp host {deny_sourcetcp} host {deny_destinationtcp} eq {tmpport}\n"
+        acl_config = {
+        "acl_name": acl_name,
+        "tcp" : f"{tmp} tcp host {deny_sourcetcp} host {deny_destinationtcp} eq {tmpport}\n"     
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+        
+    elif user_action == "4":
+        source_tcp = input("Enter source IP adress: ")
+        source_wildcard_masks =input("Enter source wildcard masks: ")
+        destination_tcp = input("Enter destination ip: ")
+        destination_wildcard_masks =input("Enter destination wildcard masks: ")
+        tcp  += f"{tmp} tcp {source_tcp} {source_wildcard_masks} {destination_tcp} {destination_wildcard_masks} eq {tmpport}\n" 
+        acl_config = {
+        "acl_name": acl_name,
+        "deny_tcp_range" : f"{tmp} tcp {source_tcp} {source_wildcard_masks} {destination_tcp} {destination_wildcard_masks} eq {tmpport}\n"     
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json") 
+        
+    elif user_action == "5": 
+        tcp += f"{tmp} tcp any any eq {tmpport}\n"  
+        acl_config = {
+        "acl_name": acl_name,
+        "tcp" : f"{tmp} tcp any any eq {tmpport}\n"     
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+        
+        
+    elif user_action == "6":
+        print("Exiting function...")
+        exit
+        
+    else:
+        print("Invalid selection. Please try again.")
+        
+    result = filtered_nr.run(task=send_command, command=tcp)
+    print_result(result)
+    filtered_nr.close_connections()
+    
+def protocol_ip (filtered_nr):
+    print("Select action (default is 'permit'): ")  
+    print("1 Permit")
+    print("2 Deny\n")
+    
+    tmp = ""
+    while not tmp:
+        action = input("Choose action: ")
+        if action == "1":
+            tmp += "permit"
+        elif action == "2":
+            tmp += "deny"
+        else:
+            print("Invalid selection. Please try again.")
+    
+    print("Would you like to spacific \n 1.Source\n 2.Destination\n 3.Source and Destination\n 4.Range\n 5.Not specific\n 6.Exit\n ")
+    user_action = input("Choose action : ")
+    
+    ip = f"enable\nconf t\n"
+    acl_name = input("Enter ACL name : ")
+    ip += f"ip access-list extended {acl_name}\n"    
+    
+    if user_action == "1":
+        deny_sourceip = input("Enter source IP adress ")
+        ip += f"{tmp} ip host {deny_sourceip} any\n"  
+        acl_config = {
+        "acl_name": acl_name,
+        "ip" : f"{tmp} ip host {deny_sourceip} any\n"
+        
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+            
+    elif user_action == "2":
+        deny_destinationip = input("Enter destination IP adress ")
+        ip  += f"{tmp} ip any host {deny_destinationip}\n"     
+        acl_config = {
+        "acl_name": acl_name,
+        "ip" : f"{tmp} ip any host {deny_destinationip}\n"
+        
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+          
+    elif user_action == "3":
+        deny_sourceip = input("Enter source IP adress ")
+        deny_destinationip  = input("Enter Destination IP adress ")
+        ip += f"{tmp} ip host {deny_sourceip} host {deny_destinationip}\n"
+        acl_config = {
+        "acl_name": acl_name,
+        "ip" : f"{tmp} ip host {deny_sourceip} host {deny_destinationip}\n"
+        
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+         
+    elif user_action == "4":
+        source_ip = input("Enter source IP adress: ")
+        source_wildcard_masks =input("Enter source wildcard masks: ")
+        destination_ip = input("Enter destination ip: ")
+        destination_wildcard_masks =input("Enter destination wildcard masks: ")
+        ip  += f"{tmp} ip {source_ip} {source_wildcard_masks} {destination_ip} {destination_wildcard_masks}\n"  
+        acl_config = {
+        "acl_name": acl_name,
+        "ip" : f"{tmp} ip {source_ip} {source_wildcard_masks} {destination_ip} {destination_wildcard_masks}\n"
+        
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+         
+    elif user_action == "5":
+        ip += f"{tmp} ip any any\n"
+        acl_config = {
+        "acl_name": acl_name,
+        "ip" : f"{tmp} ip any any\n"
+        
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+         
+    elif user_action == "6":
+        print("Exiting function...")
+        exit
+        
+    else:
+        print("Invalid selection. Please try again.")
+
+    result = filtered_nr.run(task=send_command, command=ip)
+    print_result(result)
+    filtered_nr.close_connections()         
+
+def protocol_dns (filtered_nr):
+    print("Select action (default is 'permit'): ")  
+    print("1 Permit")
+    print("2 Deny\n")
+    
+    tmp = ""
+    while not tmp:
+        action = input("Choose action: ")
+        if action == "1":
+            tmp += "permit"
+        elif action == "2":
+            tmp += "deny"
+        else:
+            print("Invalid selection. Please try again.")
+    
+    print("Would you like to spacific \n 1.Source\n 2.Destination\n 3.Source and Destination\n 4.Range\n 5.Not specific\n 6.Exit\n ")
+    user_action = input("Choose action : ")
+    
+    dns = f"enable\nconf t\n"
+    acl_name = input("Enter ACL name : ")
+    dns += f"ip access-list extended {acl_name}\n"
+    
+    
+    if user_action == "1":
+        deny_domainname_source = input("Enter source IP adress ")
+        dns += f"{tmp} udp host {deny_domainname_source} any eq 53 \n"
+        acl_config = {
+        "acl_name": acl_name,
+        "dns" : f"{tmp} udp host {deny_domainname_source} any eq 53 \n"
+        
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+        
+    elif user_action == "2":
+        deny_domainname_dest = input("Enter destination IP adress ")
+        dns  += f"{tmp} udp any host {deny_domainname_dest} eq 53\n"  
+        acl_config = {
+        "acl_name": acl_name,
+        "dns" : f"{tmp} udp any host {deny_domainname_dest} eq 53\n"
+        
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+        
+        
+    elif user_action == "3":
+        deny_domainname_source = input("Enter source IP adress ")
+        deny_domainname_dest  = input("Enter Destination IP adress ")
+        dns += f"{tmp} udp host {deny_domainname_source} host {deny_domainname_dest} eq 53\n"
+        acl_config = {
+        "acl_name": acl_name,
+        "dns" : f"{tmp} udp host {deny_domainname_source} host {deny_domainname_dest} eq 53\n" 
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+        
+    elif user_action == "4":
+        source_domainname = input("Enter source IP adress: ")
+        source_wildcard_masks =input("Enter source wildcard masks: ")
+        destination_domainname = input("Enter destination ip: ")
+        destination_wildcard_masks =input("Enter destination wildcard masks: ")
+        dns  += f"{tmp} udp {source_domainname} {source_wildcard_masks} {destination_domainname} {destination_wildcard_masks}\n" 
+        acl_config = {
+        "acl_name": acl_name,
+        "dns" : f"{tmp} udp {source_domainname} {source_wildcard_masks} {destination_domainname} {destination_wildcard_masks}\n"
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+        
+                  
+    elif user_action == "5": 
+        dns += f"{tmp} udp any any eq 53\n"  
+        acl_config = {
+        "acl_name": acl_name,
+        "dns" : f"{tmp} udp any any eq 53\n"
+        
+        }
+        write_acl_to_json(acl_config, f"json_acl/acl_command.json")       
+        
+        
+    elif user_action == "6":
+        print("Exiting function...")
+        exit
+        
+    else:
+        print("Invalid selection. Please try again.")
+    
+    result = filtered_nr.run(task=send_command, command=dns)
+    print_result(result)
+    filtered_nr.close_connections()
+
+ 
+def manual_config (filtered_nr):
+    
+    manual = f"enable\nconf t\n"
+    acl_name = input("Enter ACL name : ")
+    manual += f"ip access-list extended {acl_name}\n"
+    manual_config = input("Enter manual config ACL : ")
+    manual += f"{manual_config}\n"
+    acl_config = {
+    "acl_name": acl_name,
+    "manual" : f"{manual_config}\n"
+    }
+    write_acl_to_json(acl_config, f"json_acl/acl_command.json")
+     
+             
+    result = filtered_nr.run(task=send_command, command=manual)
+    print_result(result)
+    filtered_nr.close_connections()   
+    
+     
+def change_device_group(nr):
+    global passwords
+    nr = InitNornir(config_file="config.yaml")
+    
+    while True:
+        group_name = input("Enter the device group name: ")
+        filtered_nr, hosts = filter_group(nr, group_name)
+
+        if filtered_nr is not None:
+            passwords = {}
+            connected_devices = []
+            for host in hosts:
+                host_ip = nr.inventory.hosts[host].hostname
+                if test_connection(host_ip):
+                    password = getpass("Enter the password for device \033[33m{}\033[0m: ".format(host))
+                    passwords[host] = password
+                    connected_devices.append(host)  
+                else:
+                    print(f"\033[91mCannot connect to device {host} , skipping...\033[0m\n")
+
+            if connected_devices:
+                return group_name, filtered_nr
+            else:
+                print("No devices in this group could be connected to. Please choose another group.\n")
+        else:
+            print("Invalid device group. Please enter a valid group name.")
 
 def main():
     global passwords
     nr = InitNornir(config_file="config.yaml")
-
+    
     while True:
         group_name = input("Enter the device group name: ")
         filtered_nr, hosts = filter_group(nr, group_name)
-        print(list(hosts.keys())[0])
+        #print(list(hosts.keys())[0])
         if filtered_nr is not None:
             passwords = {}
             connected_devices = []  
@@ -1282,30 +909,28 @@ def main():
 
     while True:
         print("******************** "+"---- \033[92mDevice Group : "+ group_name +"\033[0m -----\n")
-        print("1 Basic ACL")
-        print("2 Advdance ACL")
-        print("3 Modify ")
-        print("4 Apply ACL ")
-        print("5 Test & Result") 
-        print("6 Show ACL") 
-        print("7 Exit\n")
+        print("1 Create ACL")
+        print("2 Modify")
+        print("3 Apply ACL ")
+        print("4 Test & Result ")
+        print("5 Show ACL") 
+        print("6 Change device") 
+        print("7 Manual config") 
+        print("8 Exit\n")
         print("********************")  
         
         user_action = input("Choose action : ")
         
         if user_action == "1":
-            basic_acl(filtered_nr)
+            Create_ACL(filtered_nr)
             
         elif user_action == "2":
-            advdance_acl(filtered_nr) 
+            modify(filtered_nr) 
         
         elif user_action == "3":
-            modify(filtered_nr) 
+            apply_acl(filtered_nr) 
             
-        elif user_action == "4":
-            apply_acl(filtered_nr)
-            
-        elif user_action == "5": 
+        elif user_action == "4": 
             acl_name = input("Enter ACL name : ")
             
             filtered_nr = nr.filter(F(groups__contains=group_name))
@@ -1315,10 +940,16 @@ def main():
             test_acl(acl_name,src_ip,filtered_nr)
             
     
-        elif user_action == "6":
+        elif user_action == "5":
             show_acl(filtered_nr)
-    
+            
         elif user_action == "6":
+            group_name, filtered_nr =change_device_group(filtered_nr) 
+        
+        elif user_action == "7":
+            manual_config(filtered_nr)
+            
+        elif user_action == "8":
             print("Exiting program...")
             break
         

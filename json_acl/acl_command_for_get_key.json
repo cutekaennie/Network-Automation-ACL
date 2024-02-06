@@ -1,0 +1,21 @@
+{
+    "test1": {
+        "acl_name": "test1",
+        "tcp": "deny tcp any host 10.20.100.2 eq 23\n",
+        "ip": "permit ip any any\n"
+    },
+    "test2": {
+        "acl_name": "test2",
+        "dns": "deny udp host 10.20.110.2 any eq 53 \n",
+        "ip": "permit ip any any\n"
+    },
+    "test3": {
+        "acl_name": "test3",
+        "icmp": "deny icmp host 10.20.110.2 any\n",
+        "ip": "permit ip any any\n"
+    },
+    "test4": {
+        "acl_name": "test4",
+        "ip": "deny ip any any\n"
+    }
+}

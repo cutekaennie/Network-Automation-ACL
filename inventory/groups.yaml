@@ -1,27 +1,24 @@
 ---
-mainro: 
-  platform: cisco_ios
-mainsw: 
+all:
   platform: cisco_ios
 
-
-row1: 
+router:
   platform: cisco_ios
-routerrow1: 
+router1:
   platform: cisco_ios
-switchrow1: 
-  platform: cisco_ios
-
-row2: 
-  platform: cisco_ios
-routerrow2:
-  platform: cisco_ios
-switchrow2: 
+router2:
   platform: cisco_ios
 
-row3: 
+switch:
   platform: cisco_ios
-routerrow3:
+coreswitch1:
   platform: cisco_ios
-switchrow3: 
+coreswitch2:
+  platform: cisco_ios
+
+pc:
+  platform: cisco_ios
+pc1:
+  platform: cisco_ios
+pc2:
   platform: cisco_ios

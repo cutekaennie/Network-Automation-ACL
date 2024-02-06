@@ -1,97 +1,60 @@
 ---
-mainrouter1:
+router1:
   hostname: 192.168.35.141
-  username: mainrouter1
-  password: "1234"
+  username: router1
+  password: "123456"
   platform: cisco_ios_telnet
   groups:
-    - mainro
+    - all
+    - router
+    - router1
 
-mainsw1:
+router2:
   hostname: 192.168.35.142
-  username: mainsw1
-  password: "1234"
+  username: switch1
+  password: "123456"
   platform: cisco_ios_telnet
   groups:
-    - mainsw
+    - all
+    - router
+    - router2
 
-ro1:
+coreswitch1:
   hostname: 192.168.35.143
-  username: ro1
-  password: "1234"
+  username: router2
+  password: "123456"
   platform: cisco_ios_telnet
   groups:
-    - row1
-    - routerrow1
+    - all
+    - switch
+    - coreswitch1
 
-sw101:
-  hostname: 192.168.35.146
-  username: sw101
-  password: "1234"
-  platform: cisco_ios_telnet
-  groups:
-    - row1
-    - switchrow1
-
-sw102:
-  hostname: 192.168.35.149
-  username: sw102
-  password: "1234"
-  platform: cisco_ios_telnet
-  groups:
-    - row1
-    - switchrow1
-
-ro2:
+coreswitch2:
   hostname: 192.168.35.144
-  username: ro2
-  password: "1234"
+  username: switch2
+  password: "123456"
   platform: cisco_ios_telnet
   groups:
-    - row2
-    - routerrow2
+    - all
+    - switch
+    - coreswitch2
 
-sw201:
-  hostname: 192.168.35.147
-  username: sw201
-  password: "1234"
-  platform: cisco_ios_telnet
-  groups:
-    - row2
-    - switchrow2
-
-sw202:
-  hostname: 192.168.35.150
-  username: sw202
-  password: "1234"
-  platform: cisco_ios_telnet
-  groups:
-    - row2
-    - switchrow2
-
-ro3:
+pc1:
   hostname: 192.168.35.145
-  username: ro3
-  password: "1234"
+  username: router2
+  password: "123456"
   platform: cisco_ios_telnet
   groups:
-    - row3
-    - routerrow3
+    - all
+    - pc
+    - pc1
 
-sw301:
-  hostname: 192.168.35.148
-  username: sw301
-  password: "1234"
+pc2:
+  hostname: 192.168.35.146
+  username: switch2
+  password: "123456"
   platform: cisco_ios_telnet
   groups:
-    - row3
-    - switchrow3
-
-sw302:
-  hostname: 192.168.35.151
-  username: sw302
-  password: "1234"
-  platform: cisco_ios_telnet
-  groups:
-    - row3
-    - switchrow3
+    - all
+    - pc
+    - pc2
